@@ -17,9 +17,11 @@ import biblemulticonverter.data.Book;
 import biblemulticonverter.data.BookID;
 import biblemulticonverter.data.Chapter;
 import biblemulticonverter.data.FormattedText;
+import biblemulticonverter.data.FormattedText.ExtraAttributePriority;
 import biblemulticonverter.data.FormattedText.FormattingInstructionKind;
 import biblemulticonverter.data.FormattedText.Headline;
 import biblemulticonverter.data.FormattedText.LineBreakKind;
+import biblemulticonverter.data.FormattedText.RawHTMLMode;
 import biblemulticonverter.data.FormattedText.Visitor;
 import biblemulticonverter.data.MetadataBook;
 import biblemulticonverter.data.MetadataBook.MetadataBookKey;
@@ -55,7 +57,7 @@ public class YCHPalmBible implements RoundtripFormat {
 				description = metaDescription;
 		}
 
-		try (final BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(filename), "windows-1252"))) {
+		try (final BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(filename), StandardCharsets.UTF_8))) {
 			bw.write("<PARSERINFO ENCODE=\"Cp1252\" WORDTYPE=\"SPCSEP\">");
 			bw.newLine();
 			bw.write("<BIBLE NAME=\"" + bible.getName() + "\" INFO=\"" + description + "\">");
@@ -68,6 +70,7 @@ public class YCHPalmBible implements RoundtripFormat {
 
 				@Override
 				public void visitText(String text) throws IOException {
+					System.out.println(text);
 					bw.write(text);
 				}
 
@@ -87,6 +90,7 @@ public class YCHPalmBible implements RoundtripFormat {
 				}
 			};
 
+			int[] sorting = { 0 };
 			for (Book bk : bible.getBooks()) {
 				int zefID = bk.getId().getZefID();
 				if (zefID < 1 || zefID >= PALM_BOOK_NUMBERS.length || PALM_BOOK_NUMBERS[zefID] == 0) {
@@ -136,7 +140,12 @@ public class YCHPalmBible implements RoundtripFormat {
 							if (!vv.getNumber().equals("" + v.getNumber())) {
 								bw.write("{" + vv.getNumber() + "} ");
 							}
-							vv.accept(contentVisitor);
+							sorting[0] += 10;
+							StringBuilder sb = new StringBuilder();
+							vv.accept(new UnboundBibleVisitor(sb, sorting, false));
+							String text = sb.toString();
+							bw.write(text);
+							// vv.accept(contentVisitor);
 						}
 						bw.write("</VERSE>");
 						verse++;
@@ -306,5 +315,135 @@ public class YCHPalmBible implements RoundtripFormat {
 	@Override
 	public boolean isImportExportRoundtrip() {
 		return false;
+	}
+
+	private static class UnboundBibleVisitor implements Visitor<RuntimeException> {
+
+		private final StringBuilder sb;
+		protected final List<String> suffixStack = new ArrayList<String>();
+		private final int[] sorting;
+		private final boolean useParsedFormat;
+
+		private UnboundBibleVisitor(StringBuilder sb, int[] sorting, boolean useParsedFormat) {
+			this.sb = sb;
+			this.sorting = sorting;
+			this.useParsedFormat = useParsedFormat;
+			suffixStack.add("");
+		}
+
+		@Override
+		public void visitVerseSeparator() {
+			sb.append("/");
+		}
+
+		@Override
+		public void visitText(String text) {
+			// there seems to be no escaping syntax; let's hope for the best
+			sb.append(text);
+		}
+
+		@Override
+		public void visitStart() {
+		}
+
+		@Override
+		public void visitLineBreak(LineBreakKind kind) {
+			sb.append(" ");
+		}
+
+		@Override
+		public int visitElementTypes(String elementTypes) {
+			return 0;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitHeadline(int depth) {
+			System.out.println("WARNING: Headlines are not supported");
+			return null;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitFormattingInstruction(FormattingInstructionKind kind) {
+			System.out.println("WARNING: Formatting is not supported");
+			suffixStack.add("");
+			return this;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitFootnote() {
+			System.out.println("WARNING: Footnotes are not supported");
+			return null;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitExtraAttribute(ExtraAttributePriority prio, String category, String key, String value) {
+			if (category.equals("unbound") && key.equals("sorting-diff")) {
+				sorting[0] += Integer.parseInt(value);
+				return null;
+			}
+			Visitor<RuntimeException> result = prio.handleVisitor(category, this);
+			if (result != null)
+				suffixStack.add("");
+			return result;
+		}
+
+		@Override
+		public boolean visitEnd() {
+			sb.append(suffixStack.remove(suffixStack.size() - 1));
+			return false;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitDictionaryEntry(String dictionary, String entry) {
+			System.out.println("WARNING: Dictionary entries are not supported");
+			suffixStack.add("");
+			return this;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitGrammarInformation(int[] strongs, String[] rmac, int[] sourceIndices) {
+			if (useParsedFormat) {
+				StringBuilder suffix = new StringBuilder();
+				if (strongs != null) {
+					for (int strong : strongs) {
+						suffix.append(" G" + strong);
+					}
+				}
+				if (rmac != null) {
+					for (String r : rmac) {
+						suffix.append(" " + r);
+					}
+				}
+				suffixStack.add(suffix.toString());
+			} else {
+				// System.out.println("WARNING: Grammar information is only supported in the \"Parsed\" format");
+				suffixStack.add("");
+			}
+			return this;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitCrossReference(String bookAbbr, BookID book, int firstChapter, String firstVerse, int lastChapter, String lastVerse) {
+			System.out.println("WARNING: Cross references are not supported");
+			suffixStack.add("");
+			return this;
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitCSSFormatting(String css) {
+			System.out.println("WARNING: Formatting is not supported");
+			suffixStack.add("");
+			return this;
+		}
+
+		@Override
+		public void visitRawHTML(RawHTMLMode mode, String raw) {
+			System.out.println("WARNING: Raw HTML is not supported");
+		}
+
+		@Override
+		public Visitor<RuntimeException> visitVariationText(String[] variations) {
+			throw new RuntimeException("Variations are not supported");
+		}
 	}
 }
